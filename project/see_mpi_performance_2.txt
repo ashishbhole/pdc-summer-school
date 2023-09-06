@@ -1,4 +1,4 @@
-# no of process, time, allocating 10 processors
+# no of process, time, allocating 10 nodes
 100  0.026454
 200  0.023610
 300  0.016268

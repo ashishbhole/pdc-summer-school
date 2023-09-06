@@ -5,9 +5,12 @@
 
 make clean
 
-make energy_storms_seq
-./energy_storms_seq 100000 test_files/test_01_a35_p*
-
 make energy_storms_omp
-export OMP_NUM_THREADS=10
-./energy_storms_omp 100000 test_files/test_01_a35_p*
+
+allThreads=(1 2 4 8 16 32 64 128)
+
+for nt in ${allThreads[@]}
+do
+   export OMP_NUM_THREADS=$nt
+   ./energy_storms_omp 1000000 test_files/test_01_a35_p*
+done

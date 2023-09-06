@@ -178,6 +178,7 @@ int main(int argc, char *argv[]) {
 
     /* START: Do NOT optimize/parallelize the code of the main program above this point */
 
+    /* variables to store thread ID and no of threads */
     /* 3. Allocate memory for the layer and initialize to zero */
     float *layer = (float *)malloc( sizeof(float) * layer_size );
     float *layer_copy = (float *)malloc( sizeof(float) * layer_size );
@@ -189,22 +190,24 @@ int main(int argc, char *argv[]) {
     for( k=0; k<layer_size; k++ ) layer_copy[k] = 0.0f;
     
     /* 4. Storms simulation */
-    for( i=0; i<num_storms; i++) {
+    for( i=0; i<num_storms; i++) 
+    {
+      {
+         /* 4.1. Add impacts energies to layer cells */
+         /* For each particle */
+         for( j=0; j<storms[i].size; j++ ) 
+         {
+           /* Get impact energy (expressed in thousandths) */
+           float energy = (float)storms[i].posval[j*2+1] * 1000;
+           /* Get impact position */
+           int position = storms[i].posval[j*2];
 
-        /* 4.1. Add impacts energies to layer cells */
-        /* For each particle */
-        for( j=0; j<storms[i].size; j++ ) {
-            /* Get impact energy (expressed in thousandths) */
-            float energy = (float)storms[i].posval[j*2+1] * 1000;
-            /* Get impact position */
-            int position = storms[i].posval[j*2];
-
-            /* For each cell in the layer */
-            for( k=0; k<layer_size; k++ ) {
-                /* Update the energy value for the cell */
-                update( layer, layer_size, k, position, energy );
-            }
-        }
+           #pragma omp parallel for //schedule(dynamic,layer_size/omp_get_num_threads())
+           /* For each cell in the layer */
+           for( k=0; k<layer_size; k++ ) 
+              /* Update the energy value for the cell */
+              update( layer, layer_size, k, position, energy );
+         }
 
         /* 4.2. Energy relaxation between storms */
         /* 4.2.1. Copy values to the ancillary array */
@@ -213,20 +216,27 @@ int main(int argc, char *argv[]) {
 
         /* 4.2.2. Update layer using the ancillary values.
                   Skip updating the first and last positions */
+        #pragma omp parallel for
         for( k=1; k<layer_size-1; k++ )
             layer[k] = ( layer_copy[k-1] + layer_copy[k] + layer_copy[k+1] ) / 3;
 
         /* 4.3. Locate the maximum value in the layer, and its position */
-        for( k=1; k<layer_size-1; k++ ) {
-            /* Check it only if it is a local maximum */
-            if ( layer[k] > layer[k-1] && layer[k] > layer[k+1] ) {
-                if ( layer[k] > maximum[i] ) {
-                    maximum[i] = layer[k];
-                    positions[i] = k;
-                }
-            }
+        #pragma omp parallel for
+        for( k=1; k<layer_size-1; k++ ) 
+        {
+           /* Check it only if it is a local maximum */
+           if ( layer[k] > layer[k-1] && layer[k] > layer[k+1] ) 
+           {
+              if ( layer[k] > maximum[i] ) 
+              {
+                 maximum[i] = layer[k];
+                 positions[i] = k;
+              }
+           }
         }
-    }
+
+      }
+    } 
 
     /* END: Do NOT optimize/parallelize the code below this point */
 
