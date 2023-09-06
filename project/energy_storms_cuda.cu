@@ -5,7 +5,7 @@
  * 2017/2018
  *
  * Version: 2.0
- *
+ *++
  * Code prepared to be used with the Tablon on-line judge.
  * The current Parallel Computing course includes contests using:
  * OpenMP, MPI, and CUDA.
@@ -26,6 +26,8 @@
 /* Headers for the CUDA assignment versions */
 #include<cuda.h>
 
+#define TBP 32    // Specify threads per block
+
 /*
  * Macros to show errors when calling a CUDA library function,
  * or after launching a kernel
@@ -42,7 +44,7 @@
 	}
 
 
-/* Use fopen function in local tests. The Tablon online judge software 
+/* Use fopen function in local tests. The Tablon online judge software
    substitutes it by a different function to run in its sandbox */
 #ifdef CP_TABLON
 #include "cputilstablon.h"
@@ -68,7 +70,10 @@ typedef struct {
 
 /* THIS FUNCTION CAN BE MODIFIED */
 /* Function to update a single position of the layer */
-void update( float *layer, int layer_size, int k, int pos, float energy ) {
+__global__ void update( float *d_layer, int layer_size, int pos, float energy )
+{
+    const int k = blockIdx.x*blockDim.x + threadIdx.x;
+
     /* 1. Compute the absolute value of the distance between the
         impact position and the k-th position of the layer */
     int distance = pos - k;
@@ -87,7 +92,7 @@ void update( float *layer, int layer_size, int k, int pos, float energy ) {
 
     /* 5. Do not add if its absolute value is lower than the threshold */
     if ( energy_k >= THRESHOLD / layer_size || energy_k <= -THRESHOLD / layer_size )
-        layer[k] = layer[k] + energy_k;
+        d_layer[k] = d_layer[k] + energy_k;
 }
 
 
@@ -102,7 +107,7 @@ void debug_print(int layer_size, float *layer, int *positions, float *maximum, i
             /* Print the energy value of the current cell */
             printf("%10.4f |", layer[k] );
 
-            /* Compute the number of characters. 
+            /* Compute the number of characters.
                This number is normalized, the maximum level is depicted with 60 characters */
             int ticks = (int)( 60 * layer[k] / maximum[num_storms-1] );
 
@@ -116,7 +121,7 @@ void debug_print(int layer_size, float *layer, int *positions, float *maximum, i
                 printf("o");
 
             /* If the cell is the maximum of any storm, print the storm mark */
-            for (i=0; i<num_storms; i++) 
+            for (i=0; i<num_storms; i++)
                 if ( positions[i] == k ) printf(" M%d", i );
 
             /* Line feed */
@@ -135,7 +140,7 @@ Storm read_storm_file( char *fname ) {
         exit( EXIT_FAILURE );
     }
 
-    Storm storm;    
+    Storm storm;
     int ok = fscanf(fstorm, "%d", &(storm.size) );
     if ( ok != 1 ) {
         fprintf(stderr,"Error: Reading size of storm file %s\n", fname );
@@ -147,10 +152,10 @@ Storm read_storm_file( char *fname ) {
         fprintf(stderr,"Error: Allocating memory for storm file %s, with size %d\n", fname, storm.size );
         exit( EXIT_FAILURE );
     }
-    
+
     int elem;
     for ( elem=0; elem<storm.size; elem++ ) {
-        ok = fscanf(fstorm, "%d %d\n", 
+        ok = fscanf(fstorm, "%d %d\n",
                     &(storm.posval[elem*2]),
                     &(storm.posval[elem*2+1]) );
         if ( ok != 2 ) {
@@ -180,7 +185,7 @@ int main(int argc, char *argv[]) {
     Storm storms[ num_storms ];
 
     /* 1.2. Read storms information */
-    for( i=2; i<argc; i++ ) 
+    for( i=2; i<argc; i++ )
         storms[i-2] = read_storm_file( argv[i] );
 
     /* 1.3. Intialize maximum levels to zero */
@@ -207,30 +212,45 @@ int main(int argc, char *argv[]) {
     }
     for( k=0; k<layer_size; k++ ) layer[k] = 0.0f;
     for( k=0; k<layer_size; k++ ) layer_copy[k] = 0.0f;
-    
+
+    dim3 blockDim(10);
+    dim3 gridDim(ceil(((float)layer_size) / ((float)blockDim.x)));
+
+    // Allocate the output array in device memory
+    float *d_layer;
+
+    cudaMalloc((void **)&d_layer,  layer_size * sizeof(float));
+    cudaMemcpy(d_layer,      layer,      layer_size * sizeof(float), cudaMemcpyHostToDevice);
+
+    //@@ Initialize the grid and block dimensions here
+
     /* 4. Storms simulation */
     for( i=0; i<num_storms; i++) {
 
         /* 4.1. Add impacts energies to layer cells */
         /* For each particle */
-        for( j=0; j<storms[i].size; j++ ) {
+        for( j=0; j<storms[i].size; j++ )
+        {
             /* Get impact energy (expressed in thousandths) */
             float energy = (float)storms[i].posval[j*2+1] * 1000;
             /* Get impact position */
             int position = storms[i].posval[j*2];
-
-            /* For each cell in the layer */
-            for( k=0; k<layer_size; k++ ) {
-                /* Update the energy value for the cell */
-                update( layer, layer_size, k, position, energy );
-            }
+            update<<<gridDim, blockDim>>> (d_layer, layer_size, position, energy);
+            cudaDeviceSynchronize();
+        }
+        // copy output from device memory to host memory
+        cudaError err = cudaMemcpy(layer, d_layer, layer_size * sizeof(float), cudaMemcpyDeviceToHost);
+        if(err!=cudaSuccess)
+        {
+           printf("CUDA error copying to Host, j: %s, %d\n", cudaGetErrorString(err), j);
         }
 
         /* 4.2. Energy relaxation between storms */
         /* 4.2.1. Copy values to the ancillary array */
-        for( k=0; k<layer_size; k++ ) 
+        for( k=0; k<layer_size; k++ )
+        {
             layer_copy[k] = layer[k];
-
+        }
         /* 4.2.2. Update layer using the ancillary values.
                   Skip updating the first and last positions */
         for( k=1; k<layer_size-1; k++ )
@@ -251,7 +271,7 @@ int main(int argc, char *argv[]) {
     /* END: Do NOT optimize/parallelize the code below this point */
 
     /* 5. End time measurement */
-	CHECK_CUDA_CALL( cudaDeviceSynchronize() );
+	  CHECK_CUDA_CALL( cudaDeviceSynchronize() );
     ttotal = cp_Wtime() - ttotal;
 
     /* 6. DEBUG: Plot the result (only for layers up to 35 points) */
@@ -269,11 +289,12 @@ int main(int argc, char *argv[]) {
         printf(" %d %f", positions[i], maximum[i] );
     printf("\n");
 
-    /* 8. Free resources */    
+    /* 8. Free resources */
     for( i=0; i<argc-2; i++ )
         free( storms[i].posval );
+
+    cudaFree(d_layer);
 
     /* 9. Program ended successfully */
     return 0;
 }
-

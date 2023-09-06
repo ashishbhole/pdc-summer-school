@@ -198,9 +198,8 @@ int main(int argc, char *argv[]) {
     }
 
     /* 2. Begin time measurement */
-    hipSetDevice(0);
-    hipDeviceSynchronize();
-
+	CHECK_CUDA_CALL( hipSetDevice(0) );
+	CHECK_CUDA_CALL( hipDeviceSynchronize() );
     double ttotal = cp_Wtime();
 
     /* START: Do NOT optimize/parallelize the code of the main program above this point */
@@ -221,7 +220,7 @@ int main(int argc, char *argv[]) {
     // Allocate the output array in device memory
     float *d_layer;
 
-    hipMalloc(&d_layer,  layer_size * sizeof(float));
+    hipMalloc((void **)&d_layer,  layer_size * sizeof(float));
     hipMemcpy(d_layer,      layer,      layer_size * sizeof(float), hipMemcpyHostToDevice);
 
     //@@ Initialize the grid and block dimensions here
@@ -241,13 +240,18 @@ int main(int argc, char *argv[]) {
             hipDeviceSynchronize();
         }
         // copy output from device memory to host memory
-        hipMemcpy(layer, d_layer, layer_size * sizeof(float), hipMemcpyDeviceToHost);
+        hipError_t err = hipMemcpy(layer, d_layer, layer_size * sizeof(float), hipMemcpyDeviceToHost);
+        if(err!=hipSuccess)
+        {
+           printf("CUDA error copying to Host, j: %s, %d\n", hipGetErrorString(err), j);
+        }
 
         /* 4.2. Energy relaxation between storms */
         /* 4.2.1. Copy values to the ancillary array */
         for( k=0; k<layer_size; k++ )
+        {
             layer_copy[k] = layer[k];
-
+        }
         /* 4.2.2. Update layer using the ancillary values.
                   Skip updating the first and last positions */
         for( k=1; k<layer_size-1; k++ )
@@ -268,7 +272,7 @@ int main(int argc, char *argv[]) {
     /* END: Do NOT optimize/parallelize the code below this point */
 
     /* 5. End time measurement */
-    hipDeviceSynchronize();
+	  CHECK_CUDA_CALL( hipDeviceSynchronize() );
     ttotal = cp_Wtime() - ttotal;
 
     /* 6. DEBUG: Plot the result (only for layers up to 35 points) */
