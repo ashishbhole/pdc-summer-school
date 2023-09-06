@@ -50,10 +50,11 @@ typedef struct {
 
 /* THIS FUNCTION CAN BE MODIFIED */
 /* Function to update a single position of the layer */
-void update( float *layer, int layer_size, int k, int pos, float energy ) {
+void update( float *local_layer, int layer_size, int k, int pos, float energy, int global_k ) {
+
     /* 1. Compute the absolute value of the distance between the
-        impact position and the k-th position of the layer */
-    int distance = pos - k;
+        impact position and the (global) k-th position of the layer */
+    int distance = pos - global_k;
     if ( distance < 0 ) distance = - distance;
 
     /* 2. Impact cell has a distance value of 1 */
@@ -69,7 +70,7 @@ void update( float *layer, int layer_size, int k, int pos, float energy ) {
 
     /* 5. Do not add if its absolute value is lower than the threshold */
     if ( energy_k >= THRESHOLD / layer_size || energy_k <= -THRESHOLD / layer_size )
-        layer[k] = layer[k] + energy_k;
+        local_layer[k] = local_layer[k] + energy_k;
 }
 
 
@@ -152,6 +153,7 @@ int main(int argc, char *argv[]) {
     int i,j,k;
 
     int rank, size;
+    MPI_Status status;
 
     MPI_Init(&argc, &argv);
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
@@ -186,23 +188,36 @@ int main(int argc, char *argv[]) {
     /* START: Do NOT optimize/parallelize the code of the main program above this point */
     int offset_left = -1;
     int offset_right = 1;
-    int local_layer_size;
 
-    // generalize this later
+    float *layer;
+    float *local_layer;
+    float *local_layer_copy;
+
+    int local_layer_size, lmin, lmax, global_k;
+    // generalize this later: For now we must use layer_size as integer
+    // multiple of no of mpi processes.
     local_layer_size = layer_size/size;
-    if(rank==0) offset_left = 0;
-    if(rank==(size-1)) offset_right = 0;
+    MPI_Bcast(&layer_size, 1, MPI_INT, 0, MPI_COMM_WORLD);
+
+    lmin = rank     * local_layer_size;
+    lmax = (rank+1) * local_layer_size - 1;
 
     /* 3. Allocate memory for the layer and initialize to zero */
-    float *layer = (float *)malloc( sizeof(float) * (local_ayer_size+2) );
-    float *layer_copy = (float *)malloc( sizeof(float) * (local_ayer_size+2) );
-    if ( layer == NULL || layer_copy == NULL ) {
+    if(rank==0) layer = malloc( sizeof(float) * (layer_size) );
+
+    local_layer = malloc( sizeof(float) * (local_layer_size) );
+    local_layer_copy = malloc( sizeof(float) * (local_layer_size+2) );
+
+    if ( local_layer == NULL || local_layer_copy == NULL ) {
         fprintf(stderr,"Error: Allocating the layer memory\n");
         exit( EXIT_FAILURE );
     }
-    for( k=offset_left; k<local_layer_size+offset_right; k++ ) layer[k] = 0.0f;
-    for( k=offset_left; k<local_layer_size+offset_right; k++ ) layer_copy[k] = 0.0f;
-    
+    for( k=0; k<local_layer_size; k++ )
+       local_layer[k] = 0.0f;
+
+    for( k=offset_left; k<local_layer_size+offset_right; k++ )
+       local_layer_copy[k] = 0.0f;
+
     /* 4. Storms simulation */
     for( i=0; i<num_storms; i++) {
 
@@ -215,42 +230,76 @@ int main(int argc, char *argv[]) {
             int position = storms[i].posval[j*2];
 
             /* For each cell in the layer */
-            for( k=0; k<local_layer_size; k++ ) {
+            for( k=0; k<local_layer_size; k++ ) 
+            {
                 /* Update the energy value for the cell */
-                update( layer, layer_size, k, position, energy );
+                global_k = lmin + k;
+                update( local_layer, layer_size, k, position, energy, global_k );
             }
-        }
-
-        // communication below
-        if(rank==0)
-        {
-        }
-        else
-        {
         }
 
         /* 4.2. Energy relaxation between storms */
         /* 4.2.1. Copy values to the ancillary array */
-        for( k=offset_left; k<local_layer_size+offset_right; k++ )
-            layer_copy[k] = layer[k];
+        for( k=0; k<local_layer_size; k++ )
+            local_layer_copy[k] = local_layer[k];
+
+        // communication between ranks
+        if(rank==0)
+        {
+          MPI_Send(&local_layer_copy[local_layer_size], 1, MPI_FLOAT, rank+1, 11, MPI_COMM_WORLD);
+          MPI_Recv(&local_layer_copy[local_layer_size+1], 1, MPI_FLOAT, rank+1, 10, MPI_COMM_WORLD, &status);
+        }
+        else if(rank==(size-1))
+        {
+          MPI_Send(&local_layer_copy[1], 1, MPI_FLOAT, rank-1, 10, MPI_COMM_WORLD);
+          MPI_Recv(&local_layer_copy[-1], 1, MPI_FLOAT, rank-1, 11, MPI_COMM_WORLD, &status);
+        }
+        else
+        {
+          MPI_Send(&local_layer_copy[1], 1, MPI_FLOAT, rank-1, 10, MPI_COMM_WORLD);
+          MPI_Recv(&local_layer_copy[local_layer_size+1], 1, MPI_FLOAT, rank+1, 10, MPI_COMM_WORLD, &status);
+
+          MPI_Send(&local_layer_copy[local_layer_size], 1, MPI_FLOAT, rank+1, 11, MPI_COMM_WORLD);
+          MPI_Recv(&local_layer_copy[-1], 1, MPI_FLOAT, rank-1, 11, MPI_COMM_WORLD, &status);
+        }
 
         /* 4.2.2. Update layer using the ancillary values.
                   Skip updating the first and last positions */
-        for( k=0; k<local_layer_size; k++ ) // not correct
-            layer[k] = ( layer_copy[k-1] + layer_copy[k] + layer_copy[k+1] ) / 3;
+        if(rank==0)
+        {
+          for( k=1; k<local_layer_size; k++ )
+             local_layer[k] = ( local_layer_copy[k-1] + local_layer_copy[k] + local_layer_copy[k+1] ) / 3;
+        }
+        else if(rank==(size-1))
+        {
+          for( k=0; k<local_layer_size-1; k++ )
+             local_layer[k] = ( local_layer_copy[k-1] + local_layer_copy[k] + local_layer_copy[k+1] ) / 3;
+        }
+        else
+        {
+          for( k=0; k<local_layer_size; k++ ) 
+             local_layer[k] = ( local_layer_copy[k-1] + local_layer_copy[k] + local_layer_copy[k+1] ) / 3;
+        }
+
+        MPI_Gather(local_layer, local_layer_size, MPI_FLOAT, layer, local_layer_size, MPI_FLOAT, 0, MPI_COMM_WORLD );
 
         /* 4.3. Locate the maximum value in the layer, and its position */
-        for( k=offset_left; k<local_layer_size+offset_right; k++ )
+        if(rank==0)
         {
-            /* Check it only if it is a local maximum */
-            if ( layer[k] > layer[k-1] && layer[k] > layer[k+1] ) {
-                if ( layer[k] > maximum[i] ) {
+           for( k=1; k<layer_size-1; k++ )
+           {
+              /* Check it only if it is a local maximum */
+              if ( layer[k] > layer[k-1] && layer[k] > layer[k+1] )
+              {
+                 if ( layer[k] > maximum[i] ) 
+                 {
                     maximum[i] = layer[k];
                     positions[i] = k;
-                }
-            }
+                 }
+              }
+           }
         }
-    }
+       }
 
     /* END: Do NOT optimize/parallelize the code below this point */
 
@@ -258,23 +307,22 @@ int main(int argc, char *argv[]) {
     MPI_Barrier(MPI_COMM_WORLD);
     ttotal = cp_Wtime() - ttotal;
 
-    if ( rank == 0 ) {
+    if ( rank == 0 ) 
+    {
+      /* 6. DEBUG: Plot the result (only for layers up to 35 points) */
+      #ifdef DEBUG
+      debug_print( layer_size, layer, positions, maximum, num_storms );
+      #endif
 
-    /* 6. DEBUG: Plot the result (only for layers up to 35 points) */
-    #ifdef DEBUG
-    debug_print( layer_size, layer, positions, maximum, num_storms );
-    #endif
-
-    /* 7. Results output, used by the Tablon online judge software */
-    printf("\n");
-    /* 7.1. Total computation time */
-    printf("Time: %lf\n", ttotal );
-    /* 7.2. Print the maximum levels */
-    printf("Result:");
-    for (i=0; i<num_storms; i++)
-        printf(" %d %f", positions[i], maximum[i] );
-    printf("\n");
-
+      /* 7. Results output, used by the Tablon online judge software */
+      printf("\n");
+      /* 7.1. Total computation time */
+      printf("Time: %lf\n", ttotal );
+      /* 7.2. Print the maximum levels */
+      printf("Result:");
+      for (i=0; i<num_storms; i++)
+          printf(" %d %f", positions[i], maximum[i] );
+      printf("\n");
     }
 
     /* 8. Free resources */    
