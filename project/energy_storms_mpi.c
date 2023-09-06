@@ -184,16 +184,24 @@ int main(int argc, char *argv[]) {
     double ttotal = cp_Wtime();
 
     /* START: Do NOT optimize/parallelize the code of the main program above this point */
+    int offset_left = -1;
+    int offset_right = 1;
+    int local_layer_size;
+
+    // generalize this later
+    local_layer_size = layer_size/size;
+    if(rank==0) offset_left = 0;
+    if(rank==(size-1)) offset_right = 0;
 
     /* 3. Allocate memory for the layer and initialize to zero */
-    float *layer = (float *)malloc( sizeof(float) * layer_size );
-    float *layer_copy = (float *)malloc( sizeof(float) * layer_size );
+    float *layer = (float *)malloc( sizeof(float) * (local_ayer_size+2) );
+    float *layer_copy = (float *)malloc( sizeof(float) * (local_ayer_size+2) );
     if ( layer == NULL || layer_copy == NULL ) {
         fprintf(stderr,"Error: Allocating the layer memory\n");
         exit( EXIT_FAILURE );
     }
-    for( k=0; k<layer_size; k++ ) layer[k] = 0.0f;
-    for( k=0; k<layer_size; k++ ) layer_copy[k] = 0.0f;
+    for( k=offset_left; k<local_layer_size+offset_right; k++ ) layer[k] = 0.0f;
+    for( k=offset_left; k<local_layer_size+offset_right; k++ ) layer_copy[k] = 0.0f;
     
     /* 4. Storms simulation */
     for( i=0; i<num_storms; i++) {
@@ -207,24 +215,33 @@ int main(int argc, char *argv[]) {
             int position = storms[i].posval[j*2];
 
             /* For each cell in the layer */
-            for( k=0; k<layer_size; k++ ) {
+            for( k=0; k<local_layer_size; k++ ) {
                 /* Update the energy value for the cell */
                 update( layer, layer_size, k, position, energy );
             }
         }
 
+        // communication below
+        if(rank==0)
+        {
+        }
+        else
+        {
+        }
+
         /* 4.2. Energy relaxation between storms */
         /* 4.2.1. Copy values to the ancillary array */
-        for( k=0; k<layer_size; k++ ) 
+        for( k=offset_left; k<local_layer_size+offset_right; k++ )
             layer_copy[k] = layer[k];
 
         /* 4.2.2. Update layer using the ancillary values.
                   Skip updating the first and last positions */
-        for( k=1; k<layer_size-1; k++ )
+        for( k=0; k<local_layer_size; k++ ) // not correct
             layer[k] = ( layer_copy[k-1] + layer_copy[k] + layer_copy[k+1] ) / 3;
 
         /* 4.3. Locate the maximum value in the layer, and its position */
-        for( k=1; k<layer_size-1; k++ ) {
+        for( k=offset_left; k<local_layer_size+offset_right; k++ )
+        {
             /* Check it only if it is a local maximum */
             if ( layer[k] > layer[k-1] && layer[k] > layer[k+1] ) {
                 if ( layer[k] > maximum[i] ) {
